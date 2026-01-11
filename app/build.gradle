@@ -26,8 +26,9 @@ dependencies {
     // PostgreSQL
     runtimeOnly 'org.postgresql:postgresql'
 
-    // Spring AI 2.0 - OpenAI兼容模式 (阿里云DashScope)
-    implementation "org.springframework.ai:spring-ai-starter-model-openai:${libs.versions.spring.ai.get()}"
+    // Spring AI 2.0 - Google Gemini (Chat + Embedding)
+    implementation "org.springframework.ai:spring-ai-starter-model-google-genai:${libs.versions.spring.ai.get()}"
+    implementation "org.springframework.ai:spring-ai-starter-model-google-genai-embedding:${libs.versions.spring.ai.get()}"
     // Spring AI 2.0 - PostgreSQL Vector Store (pgvector)
     implementation "org.springframework.ai:spring-ai-starter-vector-store-pgvector:${libs.versions.spring.ai.get()}"
 
@@ -44,6 +45,7 @@ dependencies {
     // PDF导出 - iText 8
     implementation "com.itextpdf:itext-core:${libs.versions.itext.get()}"
     implementation "com.itextpdf:font-asian:${libs.versions.itext.get()}"
+
 
     // Lombok
     compileOnly libs.lombok

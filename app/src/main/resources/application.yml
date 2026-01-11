@@ -5,6 +5,10 @@ server:
   port: 8080
 
 spring:
+  # 加载 .env 文件 (Spring Boot 原生支持)
+  config:
+    import: optional:file:.env[.properties]
+
   application:
     name: ai-interview-platform
 
@@ -43,19 +47,26 @@ spring:
           subscriptionConnectionMinimumIdleSize: 1
           subscriptionConnectionPoolSize: 50
   
-  # Spring AI - 阿里云DashScope (OpenAI兼容模式)
+  # Spring AI - Google Gemini
   ai:
-    openai:
-      base-url: https://dashscope.aliyuncs.com/compatible-mode
-      api-key: ${AI_BAILIAN_API_KEY}
-      chat:
-        options:
-          model: ${AI_MODEL:qwen-plus}
-          temperature: 0.7
-      # Embedding模型配置 - 使用text-embedding-v3
+    # 启用 Google GenAI Embedding 模型
+    model:
       embedding:
-        options:
-          model: text-embedding-v3
+        text: google-genai
+    google:
+      genai:
+        # Chat模型配置
+        api-key: ${GEMINI_API_KEY}
+        chat:
+          options:
+            model: ${AI_MODEL:gemini-3-flash-preview}
+            temperature: 0.7
+        # Embedding模型配置（需要单独配置 api-key）
+        embedding:
+          api-key: ${GEMINI_API_KEY}
+          text:
+            options:
+              model: text-embedding-004
     # 禁用自动重试机制，让异常立即返回
     retry:
       max-attempts: 1  # 不重试，失败立即返回
@@ -65,7 +76,7 @@ spring:
       pgvector:
         index-type: HNSW
         distance-type: COSINE_DISTANCE
-        dimensions: 1024  # text-embedding-v3实际生成的向量维度
+        dimensions: 768  # text-embedding-004 向量维度
         initialize-schema: true # 开发环境设置为 true，方便快速启动。生产环境设置为 false，手动管理数据库 schema，避免意外变更。
         remove-existing-vector-store-table: false  # 保留现有表和数据
 
@@ -79,14 +90,14 @@ app:
       - application/vnd.openxmlformats-officedocument.wordprocessingml.document
       - text/plain
 
-  # RustFS (S3兼容) 存储配置
+  # MinIO (S3兼容) 存储配置
   storage:
     endpoint: ${APP_STORAGE_ENDPOINT:http://localhost:9000}
-    access-key: ${APP_STORAGE_ACCESS_KEY:wr45VXJZhCxc6FAWz0YR}
-    secret-key: ${APP_STORAGE_SECRET_KEY:GtKxV57WJkpw4CvASPBzTy2DYElLnRqh8dIXQa0m}
+    access-key: ${APP_STORAGE_ACCESS_KEY:minioadmin}
+    secret-key: ${APP_STORAGE_SECRET_KEY:minioadmin}
     bucket: ${APP_STORAGE_BUCKET:interview-guide}
     region: ${APP_STORAGE_REGION:us-east-1}
   
-  # CORS配置 - React前端
+  # CORS配置 - React前端 (WSL + Windows 访问)
   cors:
-    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5174,http://localhost:80}
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5174,http://localhost:3000,http://localhost:80,http://127.0.0.1:5173,http://127.0.0.1:3000,http://172.17.225.17:5173,http://172.17.225.17:3000,*}

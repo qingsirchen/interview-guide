@@ -22,19 +22,25 @@ public class CorsConfig {
     @Bean
     public CorsFilter corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
-        
-        Arrays.stream(allowedOrigins.split(","))
-              .map(String::trim)
-              .forEach(config::addAllowedOrigin);
-        
+
+        // 检查是否包含通配符 *
+        if (allowedOrigins.contains("*")) {
+            // 使用 allowedOriginPatterns 支持通配符，同时保持 allowCredentials
+            config.addAllowedOriginPattern("*");
+        } else {
+            Arrays.stream(allowedOrigins.split(","))
+                  .map(String::trim)
+                  .forEach(config::addAllowedOrigin);
+        }
+
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
-        
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/api/**", config);
-        
+
         return new CorsFilter(source);
     }
 }
