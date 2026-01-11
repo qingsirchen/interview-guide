@@ -22,6 +22,11 @@ public final class AsyncTaskStreamConstants {
      */
     public static final String FIELD_CONTENT = "content";
 
+    /**
+     * 任务优先级字段
+     */
+    public static final String FIELD_PRIORITY = "priority";
+
     // ========== 通用消费者配置 ==========
 
     /**

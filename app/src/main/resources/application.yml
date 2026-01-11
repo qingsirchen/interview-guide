@@ -101,3 +101,30 @@ app:
   # CORS配置 - React前端 (WSL + Windows 访问)
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5174,http://localhost:3000,http://localhost:80,http://127.0.0.1:5173,http://127.0.0.1:3000,http://172.17.225.17:5173,http://172.17.225.17:3000,*}
+
+  # 优先级线程池配置
+  thread-pool:
+    # 简历分析消费者线程池
+    analyze:
+      core-size: 2
+      max-size: 4
+      queue-capacity: 100
+      keep-alive-seconds: 60
+    # 面试评估消费者线程池
+    evaluate:
+      core-size: 2
+      max-size: 4
+      queue-capacity: 100
+      keep-alive-seconds: 60
+    # 向量化消费者线程池
+    vectorize:
+      core-size: 2
+      max-size: 4
+      queue-capacity: 100
+      keep-alive-seconds: 60
+    # AI调用专用线程池（用于并发调用 Gemini API）
+    ai-caller:
+      core-size: 4
+      max-size: 8
+      queue-capacity: 200
+      keep-alive-seconds: 120

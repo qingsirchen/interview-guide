@@ -1,5 +1,7 @@
 package interview.guide.modules.resume.listener;
 
+import interview.guide.common.async.PriorityThreadPoolExecutor;
+import interview.guide.common.async.TaskPriority;
 import interview.guide.common.constant.AsyncTaskStreamConstants;
 import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.RedisService;
@@ -10,34 +12,58 @@ import interview.guide.modules.resume.service.ResumeGradingService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.stream.StreamMessageId;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 简历分析 Stream 消费者
  * 负责从 Redis Stream 消费消息并执行 AI 分析
+ *
+ * 优化点：
+ * 1. 使用多线程消费者并发读取消息
+ * 2. 使用优先级线程池执行 AI 分析任务
+ * 3. 支持任务优先级（VIP用户优先）
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class AnalyzeStreamConsumer {
 
     private final RedisService redisService;
     private final ResumeGradingService gradingService;
     private final ResumePersistenceService persistenceService;
     private final ResumeRepository resumeRepository;
+    private final PriorityThreadPoolExecutor aiCallerExecutor;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private ExecutorService executorService;
+    private ExecutorService consumerExecutor;
     private String consumerName;
+
+    /**
+     * 消费者线程数量
+     */
+    private static final int CONSUMER_THREAD_COUNT = 2;
+
+    public AnalyzeStreamConsumer(
+            RedisService redisService,
+            ResumeGradingService gradingService,
+            ResumePersistenceService persistenceService,
+            ResumeRepository resumeRepository,
+            @Qualifier("aiCallerExecutor") PriorityThreadPoolExecutor aiCallerExecutor) {
+        this.redisService = redisService;
+        this.gradingService = gradingService;
+        this.persistenceService = persistenceService;
+        this.resumeRepository = resumeRepository;
+        this.aiCallerExecutor = aiCallerExecutor;
+    }
 
     @PostConstruct
     public void init() {
@@ -55,25 +81,40 @@ public class AnalyzeStreamConsumer {
             log.warn("创建消费者组时发生异常（可能已存在）: {}", e.getMessage());
         }
 
-        // 启动消费者线程
-        this.executorService = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "analyze-consumer");
+        // 启动多个消费者线程
+        this.consumerExecutor = Executors.newFixedThreadPool(CONSUMER_THREAD_COUNT, r -> {
+            Thread t = new Thread(r, "analyze-consumer-" + UUID.randomUUID().toString().substring(0, 4));
             t.setDaemon(true);
             return t;
         });
 
         running.set(true);
-        executorService.submit(this::consumeLoop);
 
-        log.info("简历分析消费者已启动: consumerName={}", consumerName);
+        // 启动消费者线程
+        for (int i = 0; i < CONSUMER_THREAD_COUNT; i++) {
+            consumerExecutor.submit(this::consumeLoop);
+        }
+
+        log.info("简历分析消费者已启动: consumerName={}, consumerThreads={}, aiCallerPool={}",
+                consumerName, CONSUMER_THREAD_COUNT, aiCallerExecutor.getStats());
     }
 
     @PreDestroy
     public void shutdown() {
         running.set(false);
-        if (executorService != null) {
-            executorService.shutdown();
+
+        if (consumerExecutor != null) {
+            consumerExecutor.shutdown();
+            try {
+                if (!consumerExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    consumerExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                consumerExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
+
         log.info("简历分析消费者已关闭: consumerName={}", consumerName);
     }
 
@@ -81,24 +122,58 @@ public class AnalyzeStreamConsumer {
      * 消费循环
      */
     private void consumeLoop() {
+        String threadName = Thread.currentThread().getName();
+        log.info("消费者线程已启动: {}", threadName);
+
         while (running.get()) {
             try {
                 redisService.streamConsumeMessages(
                     AsyncTaskStreamConstants.RESUME_ANALYZE_STREAM_KEY,
                     AsyncTaskStreamConstants.RESUME_ANALYZE_GROUP_NAME,
-                    consumerName,
+                    consumerName + "-" + threadName,
                     AsyncTaskStreamConstants.BATCH_SIZE,
                     AsyncTaskStreamConstants.POLL_INTERVAL_MS,
-                    this::processMessage
+                    this::dispatchToExecutor
                 );
             } catch (Exception e) {
                 if (Thread.currentThread().isInterrupted()) {
-                    log.info("消费者线程被中断");
+                    log.info("消费者线程被中断: {}", threadName);
                     break;
                 }
-                log.error("消费消息时发生错误: {}", e.getMessage(), e);
+                log.error("消费消息时发生错误: thread={}, error={}", threadName, e.getMessage(), e);
             }
         }
+
+        log.info("消费者线程已退出: {}", threadName);
+    }
+
+    /**
+     * 将消息分发到优先级线程池执行
+     */
+    private void dispatchToExecutor(StreamMessageId messageId, Map<String, String> data) {
+        String resumeIdStr = data.get(AsyncTaskStreamConstants.FIELD_RESUME_ID);
+        String priorityStr = data.getOrDefault(AsyncTaskStreamConstants.FIELD_PRIORITY, TaskPriority.NORMAL.name());
+
+        if (resumeIdStr == null) {
+            log.warn("消息格式错误，跳过: messageId={}", messageId);
+            ackMessage(messageId);
+            return;
+        }
+
+        // 解析优先级
+        TaskPriority priority;
+        try {
+            priority = TaskPriority.valueOf(priorityStr);
+        } catch (IllegalArgumentException e) {
+            priority = TaskPriority.NORMAL;
+        }
+
+        String taskName = "analyze-resume-" + resumeIdStr;
+
+        // 提交到优先级线程池
+        aiCallerExecutor.execute(() -> processMessage(messageId, data), priority, taskName);
+
+        log.debug("任务已提交到线程池: resumeId={}, priority={}", resumeIdStr, priority);
     }
 
     /**
@@ -118,7 +193,8 @@ public class AnalyzeStreamConsumer {
         Long resumeId = Long.parseLong(resumeIdStr);
         int retryCount = Integer.parseInt(retryCountStr);
 
-        log.info("开始处理简历分析任务: resumeId={}, messageId={}, retryCount={}", resumeId, messageId, retryCount);
+        log.info("开始处理简历分析任务: resumeId={}, messageId={}, retryCount={}, thread={}",
+                resumeId, messageId, retryCount, Thread.currentThread().getName());
 
         try {
             // 1. 更新状态为 PROCESSING
@@ -146,7 +222,7 @@ public class AnalyzeStreamConsumer {
             // 判断是否需要重试
             if (retryCount < AsyncTaskStreamConstants.MAX_RETRY_COUNT) {
                 // 重新入队（增加重试计数）
-                retryMessage(resumeId, content, retryCount + 1);
+                retryMessage(resumeId, content, retryCount + 1, data.get(AsyncTaskStreamConstants.FIELD_PRIORITY));
             } else {
                 // 超过最大重试次数，标记为失败
                 String errorMsg = truncateError("分析失败(已重试" + retryCount + "次): " + e.getMessage());
@@ -161,12 +237,13 @@ public class AnalyzeStreamConsumer {
     /**
      * 重试消息（重新发送到 Stream）
      */
-    private void retryMessage(Long resumeId, String content, int retryCount) {
+    private void retryMessage(Long resumeId, String content, int retryCount, String priority) {
         try {
             Map<String, String> message = Map.of(
                 AsyncTaskStreamConstants.FIELD_RESUME_ID, resumeId.toString(),
                 AsyncTaskStreamConstants.FIELD_CONTENT, content,
-                AsyncTaskStreamConstants.FIELD_RETRY_COUNT, String.valueOf(retryCount)
+                AsyncTaskStreamConstants.FIELD_RETRY_COUNT, String.valueOf(retryCount),
+                AsyncTaskStreamConstants.FIELD_PRIORITY, priority != null ? priority : TaskPriority.NORMAL.name()
             );
 
             redisService.streamAdd(AsyncTaskStreamConstants.RESUME_ANALYZE_STREAM_KEY, message);
